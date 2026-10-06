@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111820">
+  <title>VisionCtx · Context observatory</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <div class="brand"><span class="brand-mark">V<span class="brand-dot">.</span></span><div><strong>VISIONCTX</strong><small>CONTEXT OBSERVATORY</small></div></div>
+      <div class="rail-label">WORKSPACE</div>
+      <nav aria-label="Main navigation">
+        <a href="#/" data-route="/">Overview <span>01</span></a>
+        <a href="#/requests" data-route="/requests">Requests <span>02</span></a>
+        <a href="#/benchmarks" data-route="/benchmarks">Benchmarks <span>03</span></a>
+        <a href="#/settings" data-route="/settings">Settings <span>04</span></a>
+      </nav>
+      <div class="rail-bottom"><span class="live-dot"></span> LOCAL INSTANCE <small>Nothing happens invisibly.</small></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><span>VISIONCTX / <span id="breadcrumb">OVERVIEW</span></span><span class="topbar-right"><span class="live-dot"></span> LIVE DATA</span></header>
+      <div id="app" aria-live="polite"></div>
+    </main>
+  </div>
+  <script src="/app.js" defer></script>
+</body>
+</html>
