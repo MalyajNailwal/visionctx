@@ -41,7 +41,7 @@ For OpenCode, use a project-local Anthropic provider `baseURL`; see [OpenCode se
 ## What is implemented
 
 - Native Anthropic Messages proxy with POST passthrough, status/header forwarding, SSE streaming, upstream errors, and request IDs.
-- Metadata/event capture in SQLite; body capture is off by default.
+- Metadata/event capture in SQLite; body capture is off by default, with bounded in-memory inspection of safe text blocks.
 - Anthropic text and tool-result inspection, safe JSON minification, and experimental PNG conversion for eligible tool-result strings.
 - Local dashboard with overview, request explorer, block inspector, sanitized final payload, events, and image previews.
 - Tests for passthrough bytes, SSE usage, security, parsing, and PNG output.
@@ -51,7 +51,7 @@ For OpenCode, use a project-local Anthropic provider `baseURL`; see [OpenCode se
 - Claude Code subscription OAuth gateway compatibility has not been validated. API-key routing is the supported first path.
 - No live Anthropic end-to-end run has been performed in this repository. Local integration tests use a mock upstream.
 - Image readability and task accuracy have not been benchmarked, so image mode is off by default.
-- Text summarization, learned compression, cost savings, diagnostic archives, and PostgreSQL are not implemented. An optional original-request token-count probe is available for transformed API-key requests. A small A/B harness exists but has not been run against Anthropic here.
+- Text summarization, learned compression, verified cost savings, and PostgreSQL are not implemented. An optional original-request token-count probe is available for transformed API-key requests. A small A/B harness exists but has not been run against Anthropic here.
 - The local renderer depends on the installed platform canvas package and available monospace font. Cross-platform output should be checked before using golden image hashes.
 
 See [research](docs/research.md), [architecture](docs/architecture.md), [installation](docs/installation.md), and [security](docs/security.md).

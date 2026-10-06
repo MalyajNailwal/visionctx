@@ -26,8 +26,19 @@ switch (command) {
   case 'start': {
     const proxy = createProxy(config, store);
     const dashboard = createDashboard(config, store);
-    proxy.listen(config.proxy.port, config.proxy.host);
-    dashboard.listen(config.dashboard.port, config.dashboard.host);
+    const listen = (server: typeof proxy, port: number, host: string) => new Promise<void>((resolveListen, rejectListen) => {
+      server.once('error', rejectListen);
+      server.listen(port, host, () => { server.off('error', rejectListen); resolveListen(); });
+    });
+    try {
+      await listen(proxy, config.proxy.port, config.proxy.host);
+      await listen(dashboard, config.dashboard.port, config.dashboard.host);
+    } catch (error) {
+      proxy.close();
+      dashboard.close();
+      closeStore();
+      throw error;
+    }
     writeFileSync(pidPath, String(process.pid), { mode: 0o600 });
     console.log(`VisionCtx ${config.mode}\nProxy: http://${config.proxy.host}:${config.proxy.port}\nDashboard: http://${config.dashboard.host}:${config.dashboard.port}`);
     const shutdown = () => { proxy.close(); dashboard.close(); if (existsSync(pidPath)) unlinkSync(pidPath); closeStore(); };
@@ -79,7 +90,8 @@ switch (command) {
     break;
   case 'benchmark':
     if (!args.includes('--model') || !process.env.ANTHROPIC_API_KEY) { console.log('Usage: visionctx benchmark --model <exact-anthropic-model-id> (requires ANTHROPIC_API_KEY; runs 16 paid API calls)'); closeStore(); break; }
-    console.table(await runBenchmarks(config, args[args.indexOf('--model') + 1]!, process.env.ANTHROPIC_API_KEY));
+    console.table(await runBenchmarks(config, args[args.indexOf('--model') + 1]!, process.env.ANTHROPIC_API_KEY, store));
+    closeStore();
     closeStore();
     break;
   default:

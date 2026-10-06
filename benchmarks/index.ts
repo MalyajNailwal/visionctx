@@ -1,8 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import type { AddressInfo } from 'node:net';
 import type { Config, Mode } from '../packages/core/types.js';
 import { Store } from '../packages/storage/index.js';
@@ -16,7 +14,7 @@ export const cases: BenchmarkCase[] = [
   { id: 'code-bug', file: 'bug.py', prompt: 'Return only the function name with the off-by-one loop bug.', expected: /^mean_window$/i },
   { id: 'stack-trace', file: 'trace.txt', prompt: 'Return only the file and line at the first application frame that raised the error.', expected: /^src\/billing\/invoice.py:87$/i }
 ];
-export interface BenchmarkRow { task: string; mode: Mode; answer: string; correct: boolean; input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; latency_ms: number; status: number }
+export interface BenchmarkRow { task: string; mode: Mode; answer: string; correct: boolean; tool_call_correct: boolean; input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; latency_ms: number; status: number }
 
 function makeRequest(task: BenchmarkCase, model: string): Record<string, unknown> {
   const text = readFileSync(join(fixtureRoot, task.file), 'utf8');
@@ -29,15 +27,13 @@ function makeRequest(task: BenchmarkCase, model: string): Record<string, unknown
     ] };
 }
 
-export async function runBenchmarks(config: Config, model: string, apiKey: string): Promise<BenchmarkRow[]> {
+export async function runBenchmarks(config: Config, model: string, apiKey: string, store: Store): Promise<BenchmarkRow[]> {
   const modes: Mode[] = ['passthrough', 'text', 'image', 'adaptive'];
   const rows: BenchmarkRow[] = [];
   for (const mode of modes) {
     const localConfig: Config = JSON.parse(JSON.stringify(config));
     localConfig.mode = mode;
     localConfig.compression.image.enabled = mode === 'image' || mode === 'adaptive';
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'visionctx-benchmark-')), 'benchmark.db');
-    const store = new Store(dbPath, false);
     const proxy = createProxy(localConfig, store);
     await new Promise<void>(resolve => proxy.listen(0, '127.0.0.1', resolve));
     const port = (proxy.address() as AddressInfo).port;
@@ -50,11 +46,15 @@ export async function runBenchmarks(config: Config, model: string, apiKey: strin
         });
         const payload = await response.json() as { content?: { type: string; text?: string }[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number } };
         const answer = payload.content?.filter(item => item.type === 'text').map(item => item.text ?? '').join('').trim() ?? '';
-        rows.push({ task: task.id, mode, answer, correct: task.expected.test(answer), input_tokens: payload.usage?.input_tokens ?? null,
+        const correct = task.expected.test(answer);
+        const toolCallCorrect = !payload.content?.some(item => item.type === 'tool_use');
+        const requestId = response.headers.get('x-visionctx-request-id') ?? '';
+        rows.push({ task: task.id, mode, answer, correct, tool_call_correct: toolCallCorrect, input_tokens: payload.usage?.input_tokens ?? null,
           output_tokens: payload.usage?.output_tokens ?? null, cache_read_tokens: payload.usage?.cache_read_input_tokens ?? null,
           latency_ms: Math.round(performance.now() - started), status: response.status });
+        if (requestId) store.evaluation(`${requestId}_${task.id}`, requestId, task.id, mode, correct, toolCallCorrect, {answer, status:response.status});
       }
-    } finally { await new Promise<void>(resolve => proxy.close(() => resolve())); store.close(); }
+    } finally { await new Promise<void>(resolve => proxy.close(() => resolve())); }
   }
   return rows;
 }

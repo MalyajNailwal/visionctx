@@ -6,7 +6,7 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "anthropic": { "options": { "baseURL": "http://127.0.0.1:8787" } }
+    "anthropic": { "options": { "baseURL": "http://127.0.0.1:8787/v1" } }
   }
 }
 ```

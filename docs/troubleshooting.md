@@ -7,3 +7,4 @@
 - No original source: content capture is off, or secret detection withheld the block.
 - No image: image mode and `compression.image.enabled` must both be set; risk and size gates may still keep text.
 - Model misreads image: switch to passthrough, inspect the rendered page, and record an accuracy regression. Images are experimental.
+- Image validation error: VisionCtx retries once with original text when a transformed request receives an image-related HTTP 400 before any response reaches the agent; the event timeline records this fallback.

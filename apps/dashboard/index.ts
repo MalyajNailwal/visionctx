@@ -16,6 +16,7 @@ export function createDashboard(config: Config, store: Store) {
     const path = new URL(req.url ?? '/', 'http://localhost').pathname;
     if (path === '/api/summary') return json(res, store.summary());
     if (path === '/api/requests') return json(res, store.list());
+    if (path === '/api/benchmarks') return json(res, store.evaluations());
     const match = path.match(/^\/api\/requests\/([^/]+)(?:\/(.*))?$/);
     if (match) {
       const id = match[1]!;
@@ -25,6 +26,14 @@ export function createDashboard(config: Config, store: Store) {
       const suffix = match[2] ?? '';
       if (!suffix) return json(res, { request, blocks: store.blocks(id), events: store.events(id), images: store.images(id) });
       if (suffix === 'diagnostic') return json(res, { request, blocks: store.blocks(id), events: store.events(id), images: store.images(id), note: 'Sanitized metadata only' });
+      if (suffix === 'diagnostic.tar.gz') {
+        try {
+          const archive = store.diagnostic(id);
+          res.writeHead(200, { 'content-type': 'application/gzip', 'content-disposition': `attachment; filename="request-${id}.tar.gz"`, 'content-length': archive.length, 'cache-control': 'no-store' });
+          res.end(archive);
+        } catch { json(res, { error: 'Diagnostic export failed' }, 500); }
+        return;
+      }
       const imageMatch = suffix.match(/^images\/([a-z0-9_-]+)$/i);
       if (imageMatch) {
         const image = (store.images(id) as { image_id: string; image_path: string }[]).find(item => item.image_id === imageMatch[1]);
@@ -35,15 +44,14 @@ export function createDashboard(config: Config, store: Store) {
       }
       const blockMatch = suffix.match(/^blocks\/(block_\d+)\/(original|compressed)$/);
       if (blockMatch) {
-        const block = (store.blocks(id) as Record<string, unknown>[]).find(item => item.id === blockMatch[1]);
-        const artifact = block?.[blockMatch[2] === 'original' ? 'original_path' : 'compressed_path'];
-        if (typeof artifact !== 'string' || !existsSync(artifact)) return json(res, { error: 'Artifact not captured' }, 404);
+        const artifact = store.artifact(id,blockMatch[1]!,blockMatch[2] as 'original'|'compressed');
+        if (artifact === null) return json(res, { error: 'Artifact unavailable' }, 404);
         res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(readFileSync(artifact));
+        res.end(artifact);
         return;
       }
     }
-    const asset = path === '/app.js' ? 'app.js' : path === '/style.css' ? 'style.css' : 'index.html';
+    const asset = path === '/app.js' ? 'app.js' : path === '/style.css' ? 'style.css' : path === '/extra.css' ? 'extra.css' : 'index.html';
     res.writeHead(200, { 'content-type': asset.endsWith('.js') ? 'text/javascript; charset=utf-8' : asset.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self'" });
     res.end(readFileSync(join(root, asset)));
   });
