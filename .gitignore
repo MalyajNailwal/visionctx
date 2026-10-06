@@ -4,3 +4,4 @@ data/
 .env
 *.tsbuildinfo
 *.log
+!benchmarks/fixtures/*.log

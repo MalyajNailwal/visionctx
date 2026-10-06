@@ -1,0 +1,5 @@
+2026-10-05T11:07:01.122Z INFO request_id=req_a11f route=/api/orders status=200 duration_ms=24
+2026-10-05T11:07:01.191Z WARN request_id=req_b55e route=/api/orders retry=1 reason=connection_reset
+2026-10-05T11:07:02.404Z ERROR request_id=req_c73a route=/api/orders reason=database_timeout duration_ms=3000
+2026-10-05T11:07:03.405Z ERROR request_id=req_d042 route=/api/users reason=database_timeout duration_ms=3000
+2026-10-05T11:07:04.015Z INFO request_id=req_e5cc route=/health status=200 duration_ms=2
