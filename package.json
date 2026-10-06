@@ -7,7 +7,7 @@
   "bin": { "visionctx": "./dist/apps/cli/index.js" },
   "scripts": {
     "build": "tsc && npm run copy-assets",
-    "copy-assets": "cp -R apps/dashboard/public dist/apps/dashboard/ && cp -R benchmarks/fixtures dist/benchmarks/",
+    "copy-assets": "node scripts/copy-assets.mjs",
     "test": "npm run build && node --test dist/tests/*.test.js",
     "start": "node dist/apps/cli/index.js start",
     "dev": "node --experimental-strip-types apps/cli/index.ts start"

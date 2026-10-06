@@ -1,0 +1,22 @@
+{
+  "model": "replace-with-your-anthropic-model-id",
+  "max_tokens": 64,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What does the tool output say about the request status?"
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "tool_use", "id": "toolu_example_1", "name": "read_log", "input": { "path": "app.log" } }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "toolu_example_1", "content": "2026-10-05T11:07:01Z INFO request_id=req_1 status=200" }
+      ]
+    }
+  ]
+}

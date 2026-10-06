@@ -17,15 +17,16 @@ const modeArg = args.indexOf('--mode');
 if (modeArg >= 0) config.mode = args[modeArg + 1] as Mode;
 if (!['passthrough','text','image','adaptive'].includes(config.mode)) throw new Error('Invalid mode');
 const pidPath = resolve('data/visionctx.pid');
-const store = new Store(config.storage.path, config.storage.capture_redacted_content);
+let store: Store | undefined;
+function getStore(): Store { return store ??= new Store(config.storage.path, config.storage.capture_redacted_content); }
 
 async function reachable(url: string): Promise<boolean> { try { return (await fetch(url, { signal: AbortSignal.timeout(1500) })).ok; } catch { return false; } }
-function closeStore(): void { store.close(); }
+function closeStore(): void { store?.close(); store = undefined; }
 
 switch (command) {
   case 'start': {
-    const proxy = createProxy(config, store);
-    const dashboard = createDashboard(config, store);
+    const proxy = createProxy(config, getStore());
+    const dashboard = createDashboard(config, getStore());
     const listen = (server: typeof proxy, port: number, host: string) => new Promise<void>((resolveListen, rejectListen) => {
       server.once('error', rejectListen);
       server.listen(port, host, () => { server.off('error', rejectListen); resolveListen(); });
@@ -59,13 +60,22 @@ switch (command) {
   }
   case 'status': {
     const online = await reachable(`http://${config.proxy.host}:${config.proxy.port}/health`);
-    console.log(`VisionCtx\nProxy: ${online ? 'running' : 'stopped'}\nDashboard: http://${config.dashboard.host}:${config.dashboard.port}\nDatabase: SQLite\nMode: ${config.mode}\nRequests: ${(store.summary() as {requests:number}).requests}`);
+    console.log(`VisionCtx\nProxy: ${online ? 'running' : 'stopped'}\nDashboard: http://${config.dashboard.host}:${config.dashboard.port}\nDatabase: SQLite\nMode: ${config.mode}\nRequests: ${(getStore().summary() as {requests:number}).requests}`);
     closeStore();
     break;
   }
   case 'doctor': {
     const online = await reachable(`http://${config.proxy.host}:${config.proxy.port}/health`);
-    console.log(`${online ? '✓' : '✗'} Proxy reachable\n✓ Anthropic endpoint configured: ${new URL(config.proxy.upstream).host}\n${process.env.ANTHROPIC_API_KEY ? '✓' : '✗'} API-key authentication detected\n✓ SSE forwarding implemented`);
+    let authenticatedTraffic = false;
+    if (online) {
+      try {
+        const response = await fetch(`http://${config.dashboard.host}:${config.dashboard.port}/api/requests`, { signal:AbortSignal.timeout(1500) });
+        const requests = await response.json() as {status?:number}[];
+        authenticatedTraffic = requests.some(request => request.status === 200);
+      } catch { /* dashboard may be unavailable */ }
+    }
+    const auth = process.env.ANTHROPIC_API_KEY ? '✓ API key configured in this process' : authenticatedTraffic ? '✓ Successful upstream request observed (credential type not stored)' : '· No API key in this process; run a request to verify authentication';
+    console.log(`${online ? '✓' : '✗'} Proxy reachable\n✓ Anthropic endpoint configured: ${new URL(config.proxy.upstream).host}\n${auth}\n✓ SSE forwarding implemented`);
     closeStore();
     break;
   }
@@ -74,13 +84,13 @@ switch (command) {
     closeStore();
     break;
   case 'requests':
-    console.log(JSON.stringify(store.list(), null, 2));
+    console.log(JSON.stringify(getStore().list(), null, 2));
     closeStore();
     break;
   case 'inspect': {
     const id = args[1];
     if (!id) throw new Error('inspect requires a request ID');
-    console.log(JSON.stringify({ request: store.request(id), blocks: store.blocks(id), events: store.events(id), images: store.images(id) }, null, 2));
+    console.log(JSON.stringify({ request: getStore().request(id), blocks: getStore().blocks(id), events: getStore().events(id), images: getStore().images(id) }, null, 2));
     closeStore();
     break;
   }
@@ -90,8 +100,7 @@ switch (command) {
     break;
   case 'benchmark':
     if (!args.includes('--model') || !process.env.ANTHROPIC_API_KEY) { console.log('Usage: visionctx benchmark --model <exact-anthropic-model-id> (requires ANTHROPIC_API_KEY; runs 16 paid API calls)'); closeStore(); break; }
-    console.table(await runBenchmarks(config, args[args.indexOf('--model') + 1]!, process.env.ANTHROPIC_API_KEY, store));
-    closeStore();
+    console.table(await runBenchmarks(config, args[args.indexOf('--model') + 1]!, process.env.ANTHROPIC_API_KEY, getStore()));
     closeStore();
     break;
   default:
