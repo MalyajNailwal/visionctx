@@ -18,6 +18,7 @@ export function renderText(text: string, config: Config['compression']['image'])
     if (!config.word_wrap || expanded.length <= columns) rows.push({ line: index + 1, content: expanded });
     else for (let offset = 0; offset < expanded.length; offset += columns) rows.push({ line: offset === 0 ? index + 1 : 0, content: expanded.slice(offset, offset + columns) });
   });
+  if (Math.ceil(rows.length / rowsPerPage) > (config.max_pages ?? 16)) throw new Error('Image page limit exceeded');
   const pages: RenderedImage[] = [];
   for (let offset = 0; offset < rows.length; offset += rowsPerPage) {
     const pageRows = rows.slice(offset, offset + rowsPerPage);

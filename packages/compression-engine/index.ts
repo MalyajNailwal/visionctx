@@ -57,7 +57,8 @@ export function selectStrategy(block: ContextBlock, config: Config): Compression
   if (config.mode === 'passthrough' || block.sensitive || block.risk === 'high') return passthrough;
   if (block.sizeBytes < config.compression.adaptive.passthrough_under_bytes) return passthrough;
   if (minify.canHandle(block) && (config.mode === 'text' || config.mode === 'adaptive')) return minify;
-  if (config.mode === 'image' && config.compression.image.enabled && image.canHandle(block)) return image;
-  if (config.mode === 'adaptive' && config.compression.image.enabled && block.sizeBytes >= config.compression.adaptive.image_candidate_over_bytes && image.canHandle(block)) return image;
+  const underImageLimit = block.sizeBytes <= (config.compression.image.max_source_bytes ?? 1048576);
+  if (config.mode === 'image' && config.compression.image.enabled && underImageLimit && image.canHandle(block)) return image;
+  if (config.mode === 'adaptive' && config.compression.image.enabled && underImageLimit && block.sizeBytes >= config.compression.adaptive.image_candidate_over_bytes && image.canHandle(block)) return image;
   return passthrough;
 }

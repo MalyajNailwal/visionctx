@@ -1,3 +1,4 @@
 # Fill with current official per-million-token prices for the exact model ID.
 # VisionCtx does not guess prices or claim cost savings without a configured rate.
+version: local-unconfigured
 models: {}

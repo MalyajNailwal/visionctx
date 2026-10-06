@@ -5,6 +5,8 @@ export function classify(text: string, role: 'system' | 'user' | 'assistant' | '
   if (role === 'tool_use') return { type: 'TOOL_CALL', risk: 'high', compressibility: 0 };
   if (role === 'user') return { type: 'USER_PROMPT', risk: 'high', compressibility: 0 };
   const trimmed = text.trim();
+  if (/\bmcp__\w+\b|"jsonrpc"\s*:\s*"2\.0"|^Resource URI:/m.test(text)) return { type:'MCP_OUTPUT', risk:'medium', compressibility:0.6 };
+  if (/^(?:File:|Path:|\/[^\n]+\.(?:py|ts|js|go|rs|java|sql))\s*\n/m.test(text)) return { type:'FILE_CONTENT', risk:'high', compressibility:0.4 };
   if (/^(?:\{|\[)/.test(trimmed)) { try { JSON.parse(trimmed); return { type: 'JSON', risk: 'medium', compressibility: 0.7 }; } catch { /* continue */ } }
   if (/\b(?:Traceback \(most recent call last\)|at\s+\S+\s+\([^\n]+:\d+|Error:|Exception:)\b/m.test(text)) return { type: 'ERROR_TRACE', risk: 'medium', compressibility: 0.5 };
   if (/^\s*(?:\$|>|#)\s+\S+|\b(?:stdout|stderr|exit code)\b/im.test(text)) return { type: 'TERMINAL_OUTPUT', risk: 'medium', compressibility: 0.6 };

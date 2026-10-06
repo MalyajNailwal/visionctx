@@ -9,6 +9,7 @@ import { inspectAnthropic, setAtPath } from '../../packages/request-inspector/in
 import { selectStrategy } from '../../packages/compression-engine/index.js';
 import { redact } from '../../packages/security/index.js';
 import { forwardHeaders, isMessagesPath, usageFromJson } from '../../packages/adapters/anthropic/index.js';
+import { estimateCost, lookupPricing } from '../../packages/cost-engine/index.js';
 
 const maxRequestBytes = 64 * 1024 * 1024;
 const maxResponseCaptureBytes = 2 * 1024 * 1024;
@@ -55,9 +56,10 @@ export function createProxy(config: Config, store: Store) {
       try { store.received(id, req.url ?? '/', config.mode, body.length); stored = true; } catch { /* Metadata errors cannot block API traffic. */ }
       let finalBody = body;
       if (req.method === 'POST' && req.url && isMessagesPath(req.url)) {
+        const inspectStarted = performance.now();
         const inspected = inspectAnthropic(body, id);
         if (inspected) {
-          try { store.parsed(id, inspected.model, inspected.streaming, inspected.blocks); } catch { /* best effort */ }
+          try { store.parsed(id, inspected.model, inspected.streaming, inspected.blocks, performance.now() - inspectStarted); } catch { /* best effort */ }
           if (config.mode !== 'passthrough') {
             let changed = false;
             const compressionStarted = performance.now();
@@ -66,15 +68,19 @@ export function createProxy(config: Config, store: Store) {
               const strategy = selectStrategy(block, config);
               if (strategy.name === 'image' && !block.path.endsWith('/content')) continue;
               try {
+                const renderStarted = performance.now();
+                if (strategy.name === 'image') { try { store.event(id, 'IMAGE_RENDER_STARTED', 'ok', { block: block.id }); } catch { /* best effort */ } }
                 const result = strategy.compress(block, config);
                 block.strategy = result.strategy;
                 block.reason = result.reason;
+                if (strategy.name === 'image' && !result.changed) {
+                  try { store.event(id, 'IMAGE_RENDER_COMPLETED', 'skipped', { block: block.id, reason: result.reason }, performance.now() - renderStarted); } catch { /* best effort */ }
+                }
                 if (result.changed && block.path.endsWith('/content') && result.strategy === 'image') {
-                  try { store.event(id, 'IMAGE_RENDER_STARTED', 'ok', { block: block.id }); } catch { /* best effort */ }
                   if (!result.images?.length) throw new Error('Image strategy returned no pages');
                   result.images.forEach((image, page) => store.image(id, block, image, page));
                   setAtPath(inspected.payload, block.path, result.content);
-                  try { store.event(id, 'IMAGE_RENDER_COMPLETED', 'ok', { block: block.id, pages: result.images.length }); } catch { /* best effort */ }
+                  try { store.event(id, 'IMAGE_RENDER_COMPLETED', 'ok', { block: block.id, pages: result.images.length }, performance.now() - renderStarted); } catch { /* best effort */ }
                   changed = true;
                 } else if (result.changed && result.strategy === 'minify') {
                   setAtPath(inspected.payload, block.path, result.content);
@@ -95,14 +101,15 @@ export function createProxy(config: Config, store: Store) {
         }
       }
       try { store.event(id, 'UPSTREAM_REQUEST'); } catch { /* best effort */ }
-      if (config.measurement?.counterfactual_tokens && finalBody !== body && req.headers['x-api-key']) {
+      const apiKey = req.headers['x-api-key'] ?? process.env.ANTHROPIC_API_KEY;
+      if (config.measurement?.counterfactual_tokens && finalBody !== body && apiKey) {
         const counterfactual = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
         delete counterfactual.max_tokens;
         delete counterfactual.stream;
         delete counterfactual.metadata;
         void fetch(new URL('/v1/messages/count_tokens', upstream), {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-api-key': String(req.headers['x-api-key']), 'anthropic-version': String(req.headers['anthropic-version'] ?? '2023-06-01') },
+          headers: { 'content-type': 'application/json', 'x-api-key': String(apiKey), 'anthropic-version': String(req.headers['anthropic-version'] ?? '2023-06-01') },
           body: JSON.stringify(counterfactual), signal: AbortSignal.timeout(10000)
         }).then(response => response.ok ? response.json() : null).then(value => {
           if (value && typeof value.input_tokens === 'number') store.originalCount(id, value.input_tokens);
@@ -110,12 +117,29 @@ export function createProxy(config: Config, store: Store) {
       }
       const target = new URL(req.url ?? '/', upstream);
       const transport = target.protocol === 'https:' ? https : http;
-      const headers = forwardHeaders(req.headers, target.host, finalBody !== body);
-      const upstreamReq = transport.request(target, { method: req.method, headers }, upstreamRes => {
-        try { store.event(id, 'UPSTREAM_RESPONSE', 'ok', { status: upstreamRes.statusCode }); } catch { /* best effort */ }
+      let activeRequest: http.ClientRequest | null = null;
+      req.on('aborted', () => activeRequest?.destroy());
+      const recordCost = (usage: Record<string, unknown> | undefined): void => {
+        if (!usage) return;
+        const request = store.request(id) as { model?: string | null } | undefined;
+        if (!request?.model) return;
+        const matched = lookupPricing(request.model);
+        if (!matched) return;
+        const number = (key: string): number => typeof usage[key] === 'number' ? usage[key] as number : 0;
+        store.cost(id, matched.version, estimateCost(matched.pricing, { input: number('input_tokens'), output: number('output_tokens'), cacheRead: number('cache_read_input_tokens'), cacheWrite: number('cache_creation_input_tokens') }));
+      };
+      const relay = (upstreamRes: IncomingMessage, buffered?: Buffer) => {
         const responseHeaders: OutgoingHttpHeaders = { ...upstreamRes.headers, 'x-visionctx-request-id': id };
         for (const key of ['connection','transfer-encoding','keep-alive','proxy-connection']) delete responseHeaders[key];
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+        if (buffered) {
+          res.end(buffered);
+          let usage: Record<string, unknown> | undefined;
+          try { usage = usageFromJson(JSON.parse(buffered.toString('utf8'))); } catch { /* no usage */ }
+          try { store.complete(id, upstreamRes.statusCode ?? 502, performance.now() - started, buffered.length, usage); } catch { /* best effort */ }
+          try { recordCost(usage); } catch { /* best effort */ }
+          return;
+        }
         let responseSize = 0;
         let captured = '';
         upstreamRes.on('data', (chunk: Buffer) => {
@@ -129,16 +153,37 @@ export function createProxy(config: Config, store: Store) {
           let usage: Record<string, unknown> | undefined;
           try { usage = usageFromJson(JSON.parse(captured)); } catch { usage = sseUsage(captured); }
           try { store.complete(id, upstreamRes.statusCode ?? 502, performance.now() - started, responseSize, usage); } catch { /* best effort */ }
+          try { recordCost(usage); } catch { /* best effort */ }
         });
         upstreamRes.on('error', () => { if (!res.destroyed) res.destroy(); });
-      });
-      upstreamReq.on('error', error => {
-        try { store.fail(id, error.message); } catch { /* best effort */ }
-        if (!res.headersSent) { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'proxy_error', message: 'Upstream connection failed', request_id: id } })); }
-        else res.destroy(error);
-      });
-      req.on('aborted', () => upstreamReq.destroy());
-      upstreamReq.end(finalBody);
+      };
+      const dispatch = (payload: Buffer, fallback: boolean): void => {
+        const headers = forwardHeaders(req.headers, target.host, payload !== body);
+        if (!headers['x-api-key'] && !headers.authorization && process.env.ANTHROPIC_API_KEY) headers['x-api-key'] = process.env.ANTHROPIC_API_KEY;
+        const upstreamReq = transport.request(target, { method: req.method, headers }, upstreamRes => {
+          try { store.event(id, 'UPSTREAM_RESPONSE', 'ok', { status: upstreamRes.statusCode, fallback }); } catch { /* best effort */ }
+          if (!fallback && payload !== body && upstreamRes.statusCode === 400) {
+            const chunks: Buffer[] = [];
+            upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk));
+            upstreamRes.on('end', () => {
+              const errorBody = Buffer.concat(chunks);
+              if (/image|vision|media.type|resolution/i.test(errorBody.toString('utf8'))) {
+                try { store.fallback(id, 'Upstream rejected transformed image payload'); store.finalPayload(id, JSON.parse(body.toString('utf8'))); store.event(id, 'UPSTREAM_REQUEST', 'ok', { fallback: true }); } catch { /* best effort */ }
+                dispatch(body, true);
+              } else relay(upstreamRes, errorBody);
+            });
+            upstreamRes.on('error', () => { if (!res.destroyed) res.destroy(); });
+          } else relay(upstreamRes);
+        });
+        activeRequest = upstreamReq;
+        upstreamReq.on('error', error => {
+          try { store.fail(id, error.message); } catch { /* best effort */ }
+          if (!res.headersSent) { res.writeHead(502, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'proxy_error', message: 'Upstream connection failed', request_id: id } })); }
+          else res.destroy(error);
+        });
+        upstreamReq.end(payload);
+      };
+      dispatch(finalBody, false);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown proxy error';
       if (stored) { try { store.fail(id, message); } catch { /* best effort */ } }

@@ -56,3 +56,27 @@ test('render failure keeps original tool-result text', async () => {
     assert.ok((store.events(id) as {stage:string}[]).some(event => event.stage === 'FALLBACK_USED'));
   } finally { await close(proxy); await close(upstream); store.close(); }
 });
+
+test('image validation 400 retries once with original text', async () => {
+  const bodies: string[] = [];
+  const upstream = createServer(async (req,res) => {
+    const chunks:Buffer[]=[]; for await(const chunk of req) chunks.push(chunk);
+    bodies.push(Buffer.concat(chunks).toString());
+    if (bodies.length === 1) { res.writeHead(400,{'content-type':'application/json'}); res.end('{"error":{"message":"image dimensions rejected"}}'); }
+    else { res.writeHead(200,{'content-type':'application/json'}); res.end('{"content":[],"usage":{"input_tokens":12,"output_tokens":1}}'); }
+  });
+  const upstreamPort = await listen(upstream);
+  const store = new Store(join(mkdtempSync(join(tmpdir(), 'visionctx-retry-')), 'test.db'), false);
+  const proxy = createProxy(setup(`http://127.0.0.1:${upstreamPort}`, true), store);
+  const proxyPort = await listen(proxy);
+  const log = Array.from({length:600},(_,i)=>`2026-10-05T11:07:01Z INFO request_id=req_${i} route=/api/orders status=200 duration_ms=24`).join('\n');
+  const body = JSON.stringify({model:'test',max_tokens:10,messages:[{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:log}]}]});
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`, {method:'POST',headers:{'content-type':'application/json'},body});
+    assert.equal(response.status,200);
+    assert.equal(bodies.length,2);
+    assert.equal(bodies[1],body);
+    const id=response.headers.get('x-visionctx-request-id')!;
+    assert.ok((store.events(id) as {stage:string}[]).some(event=>event.stage==='FALLBACK_USED'));
+  } finally { await close(proxy); await close(upstream); store.close(); }
+});
