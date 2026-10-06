@@ -75,3 +75,7 @@ Reuse the proven shape of a loopback proxy, selective gates, deterministic text 
 5. Dashboard consuming a stable read-only inspection API; local benchmark harness and A/B comparisons.
 
 Acceptance must be based on a real API-key or compatible authenticated end-to-end run. This research cannot certify Claude Code subscription compatibility, live image reading accuracy, or cost savings.
+
+Validation update (2026-10-07): Claude Code 2.1.281 completed a one-turn subscription-authenticated passthrough request through VisionCtx. The streamed response and provider usage were captured after handling compressed SSE. This is a smoke test for one installation, not an accuracy or savings benchmark.
+
+A read-only tool-call smoke test was inconclusive: VisionCtx observed tool-use and tool-result blocks, but the run reached its two-turn limit and some Anthropic requests returned HTTP 400. The proxy's mock-upstream tests verify byte-preserving forwarding and tool-link retention; a clean authenticated multi-turn tool run is still required for acceptance.

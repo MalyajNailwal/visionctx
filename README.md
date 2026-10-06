@@ -16,6 +16,8 @@ flowchart LR
 
 The default mode is **passthrough**. Image conversion is experimental and disabled by default. No savings are claimed without a real baseline, provider usage, current prices, and task correctness checks.
 
+See [a Messages request example](examples/messages.json) for the tool-use shape VisionCtx inspects.
+
 ## Quick start
 
 Requires Node.js 22.13 or newer and an Anthropic API key. The repository is the package; after cloning it:
@@ -42,16 +44,17 @@ For OpenCode, use a project-local Anthropic provider `baseURL`; see [OpenCode se
 
 - Native Anthropic Messages proxy with POST passthrough, status/header forwarding, SSE streaming, upstream errors, and request IDs.
 - Metadata/event capture in SQLite; body capture is off by default, with bounded in-memory inspection of safe text blocks.
-- Anthropic text and tool-result inspection, safe JSON minification, and experimental PNG conversion for eligible tool-result strings.
+- Anthropic text and tool-result inspection, JSON minification, repeated-log compression, opt-in extractive summaries, and experimental PNG conversion for eligible tool-result strings.
 - Local dashboard with overview, request explorer, block inspector, sanitized final payload, events, and image previews.
 - Tests for passthrough bytes, SSE usage, security, parsing, and PNG output.
 
 ## Current limits
 
-- Claude Code subscription OAuth gateway compatibility has not been validated. API-key routing is the supported first path.
-- No live Anthropic end-to-end run has been performed in this repository. Local integration tests use a mock upstream.
+- Claude Code 2.1.281 completed a one-turn live passthrough smoke test through VisionCtx using an existing subscription login on 2026-10-07. This verifies the local route for that version and account, not universal subscription compatibility. API-key routing is separately supported.
+- A live read-only tool-call attempt reached VisionCtx with tool-use and tool-result blocks, but hit a two-turn limit and included upstream HTTP 400 responses. End-to-end tool-call success remains unverified for this subscription path.
+- OpenCode has a documented native Anthropic base-URL path, but a live OpenCode run has not been completed here. Local integration tests also use a mock upstream.
 - Image readability and task accuracy have not been benchmarked, so image mode is off by default.
-- Text summarization, learned compression, verified cost savings, and PostgreSQL are not implemented. An optional original-request token-count probe is available for transformed API-key requests. A small A/B harness exists but has not been run against Anthropic here.
+- Semantic summarization, learned compression, verified cost savings, and PostgreSQL are not implemented. An optional original-request token-count probe is available for transformed API-key requests. A small A/B harness exists but has not been run against Anthropic here.
 - The local renderer depends on the installed platform canvas package and available monospace font. Cross-platform output should be checked before using golden image hashes.
 
 See [research](docs/research.md), [architecture](docs/architecture.md), [installation](docs/installation.md), and [security](docs/security.md).
