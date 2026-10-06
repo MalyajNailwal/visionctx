@@ -1,0 +1,34 @@
+mode: passthrough
+proxy:
+  host: 0.0.0.0
+  port: 8787
+  upstream: https://api.anthropic.com
+dashboard:
+  host: 0.0.0.0
+  port: 8788
+storage:
+  path: /app/data/visionctx.db
+  capture_redacted_content: false
+compression:
+  adaptive:
+    passthrough_under_bytes: 2048
+    minify_under_bytes: 10000
+    image_candidate_over_bytes: 50000
+  image:
+    enabled: false
+    font_family: monospace
+    font_size: 14
+    line_height: 19
+    padding: 20
+    max_width: 1000
+    max_height: 1000
+    max_pages: 16
+    max_source_bytes: 1048576
+    theme: dark
+    line_numbers: true
+    word_wrap: true
+security:
+  redact_secrets: true
+  persist_sensitive_content: false
+measurement:
+  counterfactual_tokens: false
