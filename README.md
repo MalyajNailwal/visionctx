@@ -20,12 +20,12 @@ See [a Messages request example](examples/messages.json) for the tool-use shape 
 
 ## Quick start
 
-Requires Node.js 22.13 or newer and an Anthropic API key. The repository is the package; after cloning it:
+Requires Node.js 22.13 or newer. For direct API-key routing, provide an Anthropic API key; an existing Claude Code subscription login worked in one live passthrough smoke test but is not guaranteed across accounts or versions. The repository is the package; after cloning it:
 
 ```bash
 npm install
 cp .env.example .env
-# Put ANTHROPIC_API_KEY in .env, or supply it from your shell.
+# For API-key routing, put ANTHROPIC_API_KEY in .env or supply it from your shell.
 npm run build
 npm run start
 ```
@@ -36,7 +36,7 @@ In a second terminal:
 ANTHROPIC_BASE_URL=http://127.0.0.1:8787 claude
 ```
 
-Open `http://127.0.0.1:8788`, run a coding task, and inspect its request. `node dist/apps/cli/index.js doctor` checks the local proxy and API-key presence without printing credentials. The published package binary is named `visionctx`; in a source checkout, use `node dist/apps/cli/index.js <command>` or `npm run start`.
+Open `http://127.0.0.1:8788`, run a coding task, and inspect its request. `node dist/apps/cli/index.js doctor` checks the local proxy and reports whether a process API key or successful upstream traffic was observed without printing credentials. The package binary is named `visionctx`; in a source checkout, use `node dist/apps/cli/index.js <command>` or `npm run start`.
 
 For OpenCode, use a project-local Anthropic provider `baseURL`; see [OpenCode setup](docs/opencode.md). Direct Anthropic SDK clients may set their base URL to `http://127.0.0.1:8787`.
 
