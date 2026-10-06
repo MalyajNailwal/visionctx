@@ -1,0 +1,10 @@
+{
+  "orders": [
+    { "id": "ord_101", "customer": "North quay", "total": 16.50, "currency": "USD", "status": "paid" },
+    { "id": "ord_102", "customer": "Olive works", "total": 91.20, "currency": "USD", "status": "paid" },
+    { "id": "ord_103", "customer": "Blue foundry", "total": 19.25, "currency": "USD", "status": "pending" },
+    { "id": "ord_104", "customer": "Cedar labs", "total": 91.25, "currency": "USD", "status": "paid" },
+    { "id": "ord_105", "customer": "Moss line", "total": 91.52, "currency": "USD", "status": "refunded" }
+  ],
+  "notes": "Totals are decimal USD values. Answer by exact equality, not rounded magnitude."
+}

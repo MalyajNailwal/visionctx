@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "src/api/handler.py", line 42, in handle_invoice
+    create_invoice(payload)
+  File "src/billing/invoice.py", line 87, in create_invoice
+    raise InvalidTaxCode(payload["tax_code"])
+InvalidTaxCode: TX-UNKNOWN
