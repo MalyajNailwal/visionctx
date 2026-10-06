@@ -94,12 +94,13 @@ export class Store {
     const output = numberOrNull(usage?.output_tokens);
     const read = numberOrNull(usage?.cache_read_input_tokens);
     const write = numberOrNull(usage?.cache_creation_input_tokens);
+    const totalInput = input === null ? null : input + (read ?? 0) + (write ?? 0);
     this.db.prepare(`UPDATE requests SET status=?,duration_ms=?,output_size=?,final_tokens=?,output_tokens=?,cache_read_tokens=?,cache_write_tokens=?,token_source=? WHERE id=?`)
-      .run(status,durationMs,outputSize,input,output,read,write,input === null ? 'ESTIMATED' : 'ACTUAL',id);
+      .run(status,durationMs,outputSize,totalInput,output,read,write,input === null ? 'ESTIMATED' : 'ACTUAL',id);
     this.db.prepare(`INSERT INTO token_usage(request_id,original_source,final_source,final_input_tokens,output_tokens,cached_input_tokens,cache_write_tokens)
       VALUES(?,'ESTIMATED',?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET final_source=excluded.final_source,
       final_input_tokens=excluded.final_input_tokens,output_tokens=excluded.output_tokens,cached_input_tokens=excluded.cached_input_tokens,cache_write_tokens=excluded.cache_write_tokens`)
-      .run(id,input === null ? 'ESTIMATED' : 'ACTUAL',input,output,read,write);
+      .run(id,input === null ? 'ESTIMATED' : 'ACTUAL',totalInput,output,read,write);
     this.event(id, 'COMPLETED');
   }
   fail(id: string, message: string): void {
@@ -107,6 +108,7 @@ export class Store {
     this.event(id, 'FAILED', 'error', { reason: message });
   }
   list(limit = 100): unknown[] { return this.db.prepare(`SELECT requests.*,
+    CASE WHEN original_tokens IS NOT NULL AND final_tokens IS NOT NULL THEN original_tokens-final_tokens ELSE NULL END AS estimated_tokens_saved,
     (SELECT COUNT(*) FROM images WHERE images.request_id=requests.id) AS image_count,
     (SELECT GROUP_CONCAT(DISTINCT strategy) FROM context_blocks WHERE context_blocks.request_id=requests.id) AS strategies,
     (SELECT final_estimated_cost FROM cost_records WHERE cost_records.request_id=requests.id) AS final_estimated_cost
@@ -126,6 +128,7 @@ export class Store {
   }
   summary(): unknown { return this.db.prepare(`SELECT COUNT(*) requests, SUM(final_tokens) final_tokens,
     SUM(output_tokens) output_tokens, AVG(duration_ms) average_duration_ms,
+    SUM(CASE WHEN original_tokens IS NOT NULL AND final_tokens IS NOT NULL THEN original_tokens-final_tokens ELSE NULL END) AS estimated_tokens_saved,
     (SELECT COUNT(*) FROM cost_records) AS priced_requests,
     (SELECT SUM(final_estimated_cost) FROM cost_records) AS final_estimated_cost FROM requests`).get(); }
   diagnostic(id: string): Buffer {

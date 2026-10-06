@@ -8,6 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { createProxy } from '../apps/proxy/index.js';
 import { Store } from '../packages/storage/index.js';
 import type { Config } from '../packages/core/types.js';
+import { gzipSync } from 'node:zlib';
 
 const config = (upstream: string, path: string): Config => ({
   mode: 'passthrough', proxy: { host: '127.0.0.1', port: 8787, upstream }, dashboard: { host: '127.0.0.1', port: 8788 },
@@ -64,5 +65,49 @@ test('SSE events stream through without content changes', async () => {
     const request = store.list(1)[0] as { final_tokens: number; output_tokens: number };
     assert.equal(request.final_tokens, 7);
     assert.equal(request.output_tokens, 3);
+  } finally { await close(proxy); await close(upstream); store.close(); }
+});
+
+test('proxy process API key is forwarded only when the client supplies none', async () => {
+  const previous=process.env.ANTHROPIC_API_KEY;
+  process.env.ANTHROPIC_API_KEY='unit-test-process-key';
+  const seen:string[]=[];
+  const upstream=createServer(async (req,res)=>{
+    for await (const _chunk of req) { /* consume body */ }
+    seen.push(String(req.headers['x-api-key'] ?? ''));
+    res.writeHead(200,{'content-type':'application/json'});
+    res.end('{"usage":{"input_tokens":1,"output_tokens":1},"content":[]}');
+  });
+  const upstreamPort=await listen(upstream);
+  const store=new Store(join(mkdtempSync(join(tmpdir(),'visionctx-auth-')),'test.db'),false);
+  const proxy=createProxy(config(`http://127.0.0.1:${upstreamPort}`,'unused'),store);
+  const proxyPort=await listen(proxy);
+  try {
+    const body=JSON.stringify({model:'test',messages:[],max_tokens:1});
+    await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`,{method:'POST',headers:{'content-type':'application/json'},body});
+    await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','x-api-key':'client-key'},body});
+    assert.deepEqual(seen,['unit-test-process-key','client-key']);
+    assert.doesNotMatch(JSON.stringify(store.list()),/unit-test-process-key|client-key/);
+  } finally {
+    await close(proxy); await close(upstream); store.close();
+    if (previous===undefined) delete process.env.ANTHROPIC_API_KEY; else process.env.ANTHROPIC_API_KEY=previous;
+  }
+});
+
+test('compressed SSE remains transparent while usage is extracted', async () => {
+  const sse='event: message_start\ndata: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1,"cache_read_input_tokens":5}}}\n\nevent: message_delta\ndata: {"type":"message_delta","usage":{"output_tokens":4}}\n\n';
+  const gzipped=gzipSync(sse);
+  const upstream=createServer((_req,res)=>{res.writeHead(200,{'content-type':'text/event-stream','content-encoding':'gzip'});res.end(gzipped);});
+  const upstreamPort=await listen(upstream);
+  const store=new Store(join(mkdtempSync(join(tmpdir(),'visionctx-gzip-')),'test.db'),false);
+  const proxy=createProxy(config(`http://127.0.0.1:${upstreamPort}`,'unused'),store);
+  const proxyPort=await listen(proxy);
+  try {
+    const response=await fetch(`http://127.0.0.1:${proxyPort}/v1/messages`,{method:'POST',headers:{'content-type':'application/json','accept-encoding':'gzip'},body:JSON.stringify({model:'test',messages:[],stream:true})});
+    assert.equal(await response.text(),sse);
+    await new Promise(resolve=>setTimeout(resolve,20));
+    const request=store.list(1)[0] as {final_tokens:number;output_tokens:number};
+    assert.equal(request.final_tokens,17);
+    assert.equal(request.output_tokens,4);
   } finally { await close(proxy); await close(upstream); store.close(); }
 });

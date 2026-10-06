@@ -4,6 +4,8 @@ import { redact, sanitize } from '../packages/security/index.js';
 import { inspectAnthropic } from '../packages/request-inspector/index.js';
 import { renderText } from '../packages/image-renderer/index.js';
 import { estimateCost } from '../packages/cost-engine/index.js';
+import { textCompression, summary, selectStrategy } from '../packages/compression-engine/index.js';
+import type { Config } from '../packages/core/types.js';
 
 test('secrets are redacted before display or storage', () => {
   const key = 'sk-ant-abcdefghijklmnopqrstuvwxyz123456';
@@ -43,4 +45,22 @@ test('inspector records tool calls and existing images without modifying them', 
 test('cost calculation accounts for cache reads and writes separately', () => {
   const price = {input_per_million:3,output_per_million:15,cache_read_per_million:0.3,cache_write_per_million:3.75};
   assert.equal(estimateCost(price,{input:1_000_000,output:0,cacheRead:1_000_000,cacheWrite:1_000_000}),7.05);
+});
+test('text mode collapses repeated logs and can restore original source', () => {
+  const original = ('2026-10-05T11:07:02Z ERROR same event\n').repeat(200);
+  const block = inspectAnthropic(Buffer.from(JSON.stringify({model:'m',messages:[{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:original}]}]})),'test')!.blocks[0]!;
+  const config = {mode:'text',compression:{adaptive:{passthrough_under_bytes:2048,minify_under_bytes:10000,image_candidate_over_bytes:50000},image:{enabled:false}}} as Config;
+  assert.equal(selectStrategy(block,config).name,'text_compression');
+  const result=textCompression.compress(block,config);
+  assert.equal(result.strategy,'text_compression');
+  assert.match(String(result.content),/previous line repeated 199 more times/);
+  assert.equal(textCompression.restore(block),original);
+});
+test('extractive summary retains errors and marks omissions', () => {
+  const original=Array.from({length:300},(_,i)=>i===150?'ERROR request_id=req_150 timeout':`INFO row ${i}`).join('\n');
+  const block=inspectAnthropic(Buffer.from(JSON.stringify({model:'m',messages:[{role:'user',content:[{type:'tool_result',tool_use_id:'toolu_1',content:original}]}]})),'test')!.blocks[0]!;
+  const result=summary.compress(block,{} as Config);
+  assert.equal(result.strategy,'summary');
+  assert.match(String(result.content),/ERROR request_id=req_150 timeout/);
+  assert.match(String(result.content),/lines omitted/);
 });

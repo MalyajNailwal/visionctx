@@ -8,6 +8,7 @@ export function loadConfig(path = 'visionctx.config.yaml'): Config {
   const parsed = YAML.parse(readFileSync(resolve(path), 'utf8')) as Config;
   if (!parsed || !modes.has(parsed.mode)) throw new Error('Invalid mode in configuration');
   if (!parsed.security?.redact_secrets || parsed.security.persist_sensitive_content) throw new Error('Unsafe security settings are not supported');
+  if (parsed.compression.summary?.enabled && (!Number.isInteger(parsed.compression.summary.threshold_bytes) || parsed.compression.summary.threshold_bytes < 1)) throw new Error('Invalid summary threshold');
   for (const limit of [parsed.compression.image.max_width, parsed.compression.image.max_height, parsed.compression.image.max_pages ?? 16, parsed.compression.image.max_source_bytes ?? 1048576]) {
     if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid image limit in configuration');
   }

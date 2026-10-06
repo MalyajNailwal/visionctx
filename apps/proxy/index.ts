@@ -3,6 +3,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { gunzipSync, brotliDecompressSync, inflateSync } from 'node:zlib';
 import type { Config } from '../../packages/core/types.js';
 import { Store } from '../../packages/storage/index.js';
 import { inspectAnthropic, setAtPath } from '../../packages/request-inspector/index.js';
@@ -40,6 +41,32 @@ function sseUsage(text: string): Record<string, unknown> | undefined {
   return usage;
 }
 
+function decodeCaptured(bytes: Buffer, encoding: string | undefined): string {
+  try {
+    const options = { maxOutputLength: maxResponseCaptureBytes };
+    if (encoding === 'gzip') return gunzipSync(bytes, options).toString('utf8');
+    if (encoding === 'br') return brotliDecompressSync(bytes, options).toString('utf8');
+    if (encoding === 'deflate') return inflateSync(bytes, options).toString('utf8');
+    return bytes.toString('utf8');
+  } catch { return ''; }
+}
+
+async function countTokens(upstream: URL, body: Buffer, apiKey: string, version: string): Promise<number | null> {
+  try {
+    const payload = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
+    delete payload.max_tokens;
+    delete payload.stream;
+    delete payload.metadata;
+    const response = await fetch(new URL('/v1/messages/count_tokens', upstream), {
+      method:'POST',headers:{'content-type':'application/json','x-api-key':apiKey,'anthropic-version':version},
+      body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)
+    });
+    if (!response.ok) return null;
+    const result = await response.json() as {input_tokens?:unknown};
+    return typeof result.input_tokens === 'number' ? result.input_tokens : null;
+  } catch { return null; }
+}
+
 export function createProxy(config: Config, store: Store) {
   const upstream = new URL(config.proxy.upstream);
   return createServer(async (req: IncomingMessage, res: ServerResponse) => {
@@ -55,6 +82,7 @@ export function createProxy(config: Config, store: Store) {
       const body = await readBody(req);
       try { store.received(id, req.url ?? '/', config.mode, body.length); stored = true; } catch { /* Metadata errors cannot block API traffic. */ }
       let finalBody = body;
+      let selectedImages = false;
       if (req.method === 'POST' && req.url && isMessagesPath(req.url)) {
         const inspectStarted = performance.now();
         const inspected = inspectAnthropic(body, id);
@@ -81,8 +109,9 @@ export function createProxy(config: Config, store: Store) {
                   result.images.forEach((image, page) => store.image(id, block, image, page));
                   setAtPath(inspected.payload, block.path, result.content);
                   try { store.event(id, 'IMAGE_RENDER_COMPLETED', 'ok', { block: block.id, pages: result.images.length }, performance.now() - renderStarted); } catch { /* best effort */ }
+                  selectedImages = true;
                   changed = true;
-                } else if (result.changed && result.strategy === 'minify') {
+                } else if (result.changed && typeof result.content === 'string' && result.strategy !== 'passthrough') {
                   setAtPath(inspected.payload, block.path, result.content);
                   changed = true;
                 }
@@ -100,19 +129,25 @@ export function createProxy(config: Config, store: Store) {
           try { store.finalPayload(id, inspected.payload); } catch { /* best effort */ }
         }
       }
-      try { store.event(id, 'UPSTREAM_REQUEST'); } catch { /* best effort */ }
       const apiKey = req.headers['x-api-key'] ?? process.env.ANTHROPIC_API_KEY;
-      if (config.measurement?.counterfactual_tokens && finalBody !== body && apiKey) {
-        const counterfactual = JSON.parse(body.toString('utf8')) as Record<string, unknown>;
-        delete counterfactual.max_tokens;
-        delete counterfactual.stream;
-        delete counterfactual.metadata;
-        void fetch(new URL('/v1/messages/count_tokens', upstream), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-api-key': String(apiKey), 'anthropic-version': String(req.headers['anthropic-version'] ?? '2023-06-01') },
-          body: JSON.stringify(counterfactual), signal: AbortSignal.timeout(10000)
-        }).then(response => response.ok ? response.json() : null).then(value => {
-          if (value && typeof value.input_tokens === 'number') store.originalCount(id, value.input_tokens);
+      const version = String(req.headers['anthropic-version'] ?? '2023-06-01');
+      if (config.mode === 'adaptive' && selectedImages && finalBody !== body) {
+        const preflightStarted = performance.now();
+        const [originalCount, finalCount] = apiKey ? await Promise.all([
+          countTokens(upstream, body, String(apiKey), version), countTokens(upstream, finalBody, String(apiKey), version)
+        ]) : [null, null];
+        if (originalCount !== null) { try { store.originalCount(id, originalCount); } catch { /* best effort */ } }
+        try { store.event(id, 'TOKEN_COUNT_PREFLIGHT', originalCount !== null && finalCount !== null ? 'ok' : 'unavailable',
+          { original_tokens: originalCount, final_tokens: finalCount }, performance.now() - preflightStarted); } catch { /* best effort */ }
+        if (originalCount === null || finalCount === null || finalCount >= originalCount) {
+          finalBody = body;
+          try { store.fallback(id, originalCount === null || finalCount === null ? 'Adaptive image token count unavailable' : 'Adaptive image did not reduce token count'); store.finalPayload(id, JSON.parse(body.toString('utf8'))); } catch { /* best effort */ }
+        }
+      }
+      try { store.event(id, 'UPSTREAM_REQUEST'); } catch { /* best effort */ }
+      if (config.measurement?.counterfactual_tokens && finalBody !== body && apiKey && !selectedImages) {
+        void countTokens(upstream, body, String(apiKey), version).then(value => {
+          if (value !== null) store.originalCount(id, value);
         }).catch(() => { /* Counterfactual failure must not block the request. */ });
       }
       const target = new URL(req.url ?? '/', upstream);
@@ -135,23 +170,29 @@ export function createProxy(config: Config, store: Store) {
         if (buffered) {
           res.end(buffered);
           let usage: Record<string, unknown> | undefined;
-          try { usage = usageFromJson(JSON.parse(buffered.toString('utf8'))); } catch { /* no usage */ }
+          try { usage = usageFromJson(JSON.parse(decodeCaptured(buffered, String(upstreamRes.headers['content-encoding'] ?? '')))); } catch { /* no usage */ }
           try { store.complete(id, upstreamRes.statusCode ?? 502, performance.now() - started, buffered.length, usage); } catch { /* best effort */ }
           try { recordCost(usage); } catch { /* best effort */ }
           return;
         }
         let responseSize = 0;
-        let captured = '';
+        const captured: Buffer[] = [];
+        let captureSize = 0;
         upstreamRes.on('data', (chunk: Buffer) => {
           responseSize += chunk.length;
-          if (Buffer.byteLength(captured) < maxResponseCaptureBytes) captured += chunk.toString('utf8');
+          if (captureSize < maxResponseCaptureBytes) {
+            const sample = chunk.subarray(0, maxResponseCaptureBytes - captureSize);
+            captured.push(sample);
+            captureSize += sample.length;
+          }
           if (!res.write(chunk)) upstreamRes.pause();
         });
         res.on('drain', () => upstreamRes.resume());
         upstreamRes.on('end', () => {
           res.end();
           let usage: Record<string, unknown> | undefined;
-          try { usage = usageFromJson(JSON.parse(captured)); } catch { usage = sseUsage(captured); }
+          const decoded = decodeCaptured(Buffer.concat(captured), String(upstreamRes.headers['content-encoding'] ?? ''));
+          try { usage = usageFromJson(JSON.parse(decoded)); } catch { usage = sseUsage(decoded); }
           try { store.complete(id, upstreamRes.statusCode ?? 502, performance.now() - started, responseSize, usage); } catch { /* best effort */ }
           try { recordCost(usage); } catch { /* best effort */ }
         });
@@ -167,7 +208,7 @@ export function createProxy(config: Config, store: Store) {
             upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk));
             upstreamRes.on('end', () => {
               const errorBody = Buffer.concat(chunks);
-              if (/image|vision|media.type|resolution/i.test(errorBody.toString('utf8'))) {
+              if (/image|vision|media.type|resolution/i.test(decodeCaptured(errorBody, String(upstreamRes.headers['content-encoding'] ?? '')))) {
                 try { store.fallback(id, 'Upstream rejected transformed image payload'); store.finalPayload(id, JSON.parse(body.toString('utf8'))); store.event(id, 'UPSTREAM_REQUEST', 'ok', { fallback: true }); } catch { /* best effort */ }
                 dispatch(body, true);
               } else relay(upstreamRes, errorBody);
