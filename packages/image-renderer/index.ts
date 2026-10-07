@@ -2,10 +2,13 @@ import { createCanvas } from '@napi-rs/canvas';
 import { performance } from 'node:perf_hooks';
 import type { Config, RenderedImage } from '../core/types.js';
 
-export function renderText(text: string, config: Config['compression']['image']): RenderedImage[] {
-  const started = performance.now();
-  const fontSize = config.font_size;
-  const charWidth = Math.ceil(fontSize * 0.68);
+type ImageConfig = Config['compression']['image'];
+
+interface Layout { rows: { line: number; content: string }[]; rowsPerPage: number }
+
+// ponytail: layout is shared by renderText and estimateImageTokens so the estimate can never drift from the real pixel output.
+function layout(text: string, config: ImageConfig): Layout {
+  const charWidth = Math.ceil(config.font_size * 0.68);
   const gutter = config.line_numbers ? 64 : 0;
   const columns = Math.max(20, Math.floor((config.max_width - config.padding * 2 - gutter) / charWidth));
   const rowsPerPage = Math.max(1, Math.floor((config.max_height - config.padding * 2) / config.line_height));
@@ -19,12 +22,37 @@ export function renderText(text: string, config: Config['compression']['image'])
     else for (let offset = 0; offset < expanded.length; offset += columns) rows.push({ line: offset === 0 ? index + 1 : 0, content: expanded.slice(offset, offset + columns) });
   });
   if (Math.ceil(rows.length / rowsPerPage) > (config.max_pages ?? 16)) throw new Error('Image page limit exceeded');
+  return { rows, rowsPerPage };
+}
+
+function pageSize(pageRows: { content: string }[], config: ImageConfig): { width: number; height: number } {
+  const charWidth = Math.ceil(config.font_size * 0.68);
+  const gutter = config.line_numbers ? 64 : 0;
+  const longest = Math.max(...pageRows.map(row => row.content.length), 1);
+  return { width: Math.min(config.max_width, Math.max(240, config.padding * 2 + gutter + longest * charWidth)),
+    height: Math.min(config.max_height, config.padding * 2 + pageRows.length * config.line_height) };
+}
+
+// Token cost of a text block is decided by rendered pixels, not source bytes. Measures the real layout without drawing.
+export function estimateImageTokens(text: string, config: ImageConfig): number {
+  const { rows, rowsPerPage } = layout(text, config);
+  let tokens = 0;
+  for (let offset = 0; offset < rows.length; offset += rowsPerPage) {
+    const { width, height } = pageSize(rows.slice(offset, offset + rowsPerPage), config);
+    tokens += Math.ceil(width / 28) * Math.ceil(height / 28);
+  }
+  return tokens;
+}
+
+export function renderText(text: string, config: ImageConfig): RenderedImage[] {
+  const started = performance.now();
+  const fontSize = config.font_size;
+  const gutter = config.line_numbers ? 64 : 0;
+  const { rows, rowsPerPage } = layout(text, config);
   const pages: RenderedImage[] = [];
   for (let offset = 0; offset < rows.length; offset += rowsPerPage) {
     const pageRows = rows.slice(offset, offset + rowsPerPage);
-    const longest = Math.max(...pageRows.map(row => row.content.length), 1);
-    const width = Math.min(config.max_width, Math.max(240, config.padding * 2 + gutter + longest * charWidth));
-    const height = Math.min(config.max_height, config.padding * 2 + pageRows.length * config.line_height);
+    const { width, height } = pageSize(pageRows, config);
     const canvas = createCanvas(width, height);
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = config.theme === 'dark' ? '#10151e' : '#fffdf8';

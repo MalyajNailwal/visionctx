@@ -1,10 +1,10 @@
 import type { Config, ContextBlock, CompressionResult, StrategyName } from '../core/types.js';
-import { renderText } from '../image-renderer/index.js';
+import { estimateImageTokens, renderText } from '../image-renderer/index.js';
 
 export interface CompressionStrategy {
   readonly name: StrategyName;
   canHandle(block: ContextBlock): boolean;
-  estimate(block: ContextBlock): number;
+  estimate(block: ContextBlock, config: Config): number;
   compress(block: ContextBlock, config: Config): CompressionResult;
   restore(block: ContextBlock): string | null;
   metadata(): Record<string, unknown>;
@@ -32,11 +32,11 @@ export const minify: CompressionStrategy = {
 export const image: CompressionStrategy = {
   name: 'image',
   canHandle: b => b.text !== null && !b.sensitive && b.risk !== 'high' && b.path.endsWith('/content') && ['LOGS','TERMINAL_OUTPUT','TOOL_RESULT','DOCUMENTATION'].includes(b.type),
-  estimate: b => Math.ceil(b.sizeBytes / 12),
+  estimate: (b, config) => estimateImageTokens(b.text!, config.compression.image),
   compress: (b, config) => {
     const pages = renderText(b.text!, config.compression.image);
     const imageTokens = pages.reduce((sum, page) => sum + page.estimatedImageTokens, 0);
-    if (config.mode === 'adaptive' && textCompression.canHandle(b) && textCompression.estimate(b) < imageTokens) return textCompression.compress(b,config);
+    if (config.mode === 'adaptive' && textCompression.canHandle(b) && textCompression.estimate(b, config) < imageTokens) return textCompression.compress(b,config);
     if (imageTokens >= b.estimatedTokens) return { content: b.text, strategy: 'passthrough', changed: false, reason: 'Image estimate did not beat text estimate' };
     const blocks = pages.map(page => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: page.bytes.toString('base64') } }));
     return { content: blocks, strategy: 'image', changed: true, reason: `${pages.length} PNG page(s), estimated ${imageTokens} image tokens`, images: pages };
@@ -107,15 +107,15 @@ function chooseAdaptive(b: ContextBlock, config: Config): CompressionStrategy {
     const candidates: CompressionStrategy[] = [passthrough];
     if (textCompression.canHandle(b) && b.sizeBytes >= config.compression.adaptive.minify_under_bytes) candidates.push(textCompression);
     if (config.compression.summary?.enabled && b.sizeBytes >= config.compression.summary.threshold_bytes && summary.canHandle(b)) candidates.push(summary);
-    if (config.compression.image.enabled && ['LOGS','TERMINAL_OUTPUT'].includes(b.type) && b.sizeBytes <= (config.compression.image.max_source_bytes ?? 1048576) &&
+    if (config.compression.image.enabled && b.sizeBytes <= (config.compression.image.max_source_bytes ?? 1048576) &&
         b.sizeBytes >= config.compression.adaptive.image_candidate_over_bytes && image.canHandle(b)) candidates.push(image);
-    const chosen = candidates.sort((a,bStrategy) => a.estimate(b)-bStrategy.estimate(b))[0]!;
+    const chosen = candidates.sort((a,bStrategy) => a.estimate(b, config)-bStrategy.estimate(b, config))[0]!;
     return chosen;
 }
 
 export const adaptive: CompressionStrategy = {
   name:'adaptive', canHandle: () => true,
-  estimate: b => Math.min(b.estimatedTokens, minify.canHandle(b) ? minify.estimate(b) : Infinity, textCompression.canHandle(b) ? textCompression.estimate(b) : Infinity),
+  estimate: (b, config) => Math.min(b.estimatedTokens, minify.canHandle(b) ? minify.estimate(b, config) : Infinity, textCompression.canHandle(b) ? textCompression.estimate(b, config) : Infinity),
   compress: (b,config) => chooseAdaptive(b,config).compress(b,config),
   restore: b => b.text, metadata: () => ({ policy:'lowest estimated token candidate subject to risk and size gates' })
 };

@@ -2,6 +2,14 @@ import type { ContextBlock } from '../core/types.js';
 import { classify } from '../context-classifier/index.js';
 
 export interface InspectedRequest { model: string | null; streaming: boolean; blocks: ContextBlock[]; payload: Record<string, unknown> }
+
+// Structural cache_control detection. String search matches a literal "cache_control" inside any value, which
+// misreads quoted text and misses nothing useful; walk the value instead so only real keys count.
+function hasCacheControl(value: unknown, depth = 0): boolean {
+  if (depth > 12 || !value || typeof value !== 'object') return false;
+  if (Array.isArray(value)) return value.some(item => hasCacheControl(item, depth + 1));
+  return Object.entries(value as Record<string, unknown>).some(([key, nested]) => key === 'cache_control' || hasCacheControl(nested, depth + 1));
+}
 export function inspectAnthropic(body: Buffer, requestId: string): InspectedRequest | null {
   let payload: unknown;
   try { payload = JSON.parse(body.toString('utf8')); } catch { return null; }
@@ -55,9 +63,7 @@ export function inspectAnthropic(body: Buffer, requestId: string): InspectedRequ
     for (const block of blocks) { block.risk = 'high'; block.reason = 'Protected by automatic prompt caching'; }
   } else if (Array.isArray(obj.messages)) {
     let lastCacheMessage = -1;
-    obj.messages.forEach((message, index) => {
-      if (JSON.stringify(message).includes('"cache_control"')) lastCacheMessage = index;
-    });
+    obj.messages.forEach((message, index) => { if (hasCacheControl(message)) lastCacheMessage = index; });
     for (const block of blocks) {
       const messageIndex = Number(block.path.match(/^\/messages\/(\d+)/)?.[1] ?? -1);
       if (messageIndex >= 0 && messageIndex <= lastCacheMessage) {
